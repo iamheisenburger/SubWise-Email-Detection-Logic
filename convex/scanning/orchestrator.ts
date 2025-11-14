@@ -49,6 +49,7 @@ export const startScan = mutation({
   args: {
     clerkUserId: v.string(),
     forceFullScan: v.optional(v.boolean()),
+    overrideManualCooldown: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<any> => {
     // Behavior in Safe Mode:
@@ -101,7 +102,18 @@ export const startScan = mutation({
 
     // Create scan sessions for each connection
     const sessions = [];
+    const now = Date.now();
     for (const connection of connections) {
+      // Manual scan abuse control: enforce 24h cooldown unless overridden
+      const cooldownActive =
+        !args.overrideManualCooldown &&
+        typeof connection.nextEligibleManualScanAt === "number" &&
+        now < connection.nextEligibleManualScanAt;
+      if (cooldownActive) {
+        const retryInMs = connection.nextEligibleManualScanAt - now;
+        console.log(`⏳ Cooldown active for ${connection.email}. Retry in ${Math.ceil(retryInMs / 60000)} min.`);
+        continue;
+      }
       // Determine scan type
       const hasCompletedScan = connection.lastFullScanAt && connection.lastFullScanAt > 0;
       const scanType = args.forceFullScan || !hasCompletedScan ? "full" : "incremental";
@@ -124,6 +136,13 @@ export const startScan = mutation({
       // Schedule the scan action
       await ctx.scheduler.runAfter(0, internal.scanning.orchestrator.executeScan, {
         sessionId,
+      });
+
+      // Set next eligible time for manual scans (24h cooldown)
+      await ctx.runMutation(internal.emailScanner.updateConnectionData, {
+        connectionId: connection._id,
+        lastManualScanAt: now,
+        nextEligibleManualScanAt: now + 24 * 60 * 60 * 1000,
       });
 
       sessions.push({
@@ -174,8 +193,16 @@ export const executeScan = internalAction({
     );
 
     try {
-      // Acquire distributed lock
-      const lockAcquired = await lockManager.acquire(10 * 60 * 1000); // 10 minute timeout
+      // Acquire distributed lock with backoff retries (short TTL)
+      let lockAcquired = false;
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        lockAcquired = await lockManager.acquire(2 * 60 * 1000);
+        if (lockAcquired) break;
+        const backoffMs = attempt * 750 + Math.floor(Math.random() * 250);
+        console.log(`🔒 Lock attempt ${attempt}/${maxAttempts} failed. Retrying in ${backoffMs}ms...`);
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
       if (!lockAcquired) {
         console.log(`🔒 Could not acquire lock for connection ${session.connectionId}`);
         await ctx.runMutation(internal.core.stateMachine.transitionState, {
@@ -269,6 +296,13 @@ async function executeScanPhases(ctx: any, session: any, sessionId: Id<"scanSess
       {
         connectionId: session.connectionId,
         forceFullScan: session.type === "full",
+        sinceTs: session.type === "incremental"
+          ? (typeof connection.lastScannedInternalDate === "number"
+              ? connection.lastScannedInternalDate
+              : (typeof connection.lastFullScanAt === "number" ? connection.lastFullScanAt : undefined))
+          : undefined,
+        capPages: 3,
+        capMessages: 500,
       }
     );
 
@@ -544,14 +578,18 @@ async function completeParsingPhase(
 
   // Update session stats
   const endTime = Date.now();
+  const parsedCountTotal = receiptsProcessed;
+  const estimatedCostPerReceipt = 0.0004;
+  const apiCostEstimated = Math.max(0, Math.round(parsedCountTotal * estimatedCostPerReceipt * 1e6) / 1e6);
+  const tokensPerReceiptEstimate = 1;
   await ctx.runMutation(internal.core.stateMachine.updateStats, {
     sessionId,
     stats: {
       totalEmailsFound: totalEmailsCollected,
       receiptsIdentified: totalEmailsCollected, // Use collected count
       subscriptionsDetected: candidatesCreated,
-      tokensUsed: 0, // TODO: Track from batches
-      apiCost: 0, // TODO: Track from batches
+      tokensUsed: tokensPerReceiptEstimate * parsedCountTotal,
+      apiCost: apiCostEstimated,
       processingTimeMs: endTime - startTime,
     },
   });
@@ -567,6 +605,11 @@ async function completeParsingPhase(
     await ctx.runMutation(internal.emailScanner.updateConnectionData, {
       connectionId: session.connectionId,
       lastFullScanAt: Date.now(),
+    });
+  } else if (session.type === "incremental") {
+    await ctx.runMutation(internal.emailScanner.updateConnectionData, {
+      connectionId: session.connectionId,
+      lastSyncedAt: Date.now(),
     });
   }
 
