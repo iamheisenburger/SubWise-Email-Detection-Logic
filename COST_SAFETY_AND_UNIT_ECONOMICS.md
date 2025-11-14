@@ -109,6 +109,26 @@ Expected incremental cost: ~$0.006–$0.02 per run (typical), assuming small del
 
 ---
 
+## Endpoint-Level Protections (New)
+
+- Debug endpoints can be globally disabled:
+  - Flag: `systemSettings.debugQueriesDisabled = true`
+  - Effect: read-only debug/status queries return a minimal response and do no heavy work.
+- Server-side throttle (reference implementation in app repo):
+  - Minimum interval per user per endpoint: `systemSettings.minDebugPollIntervalMs` (default 60s).
+  - Intended for:
+    - `scanning/orchestrator:getScanProgress`
+    - `adminQueries:getUserDetectionCandidates`
+    - `diagnostics:getScanDiagnostics`
+  - Implementation detail: short‑lived “rateLimit” token (distributedLocks) used to gate rapid polling.
+- Operational rule:
+  - DO NOT run continuous CLI/watch loops. Use ad‑hoc checks or ≥5‑minute polling only during an active scan.
+  - If rapid polling is detected, set `debugQueriesDisabled=true` immediately.
+
+Why: Prevents hidden costs from ad‑hoc watchers while keeping the pipeline and crons available.
+
+---
+
 ## Operational Runbook (Must Follow)
 
 1) Verify Health (Read‑Only)
