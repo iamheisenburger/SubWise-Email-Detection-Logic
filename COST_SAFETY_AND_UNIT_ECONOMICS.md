@@ -90,6 +90,25 @@ Target Alerts:
 
 ---
 
+## Incremental Scans & Cooldowns
+
+- Incremental-only after first full scan:
+  - Scanner queries Gmail with `after:<lastScannedInternalDate>` and caps work (`capPages=3`, `capMessages=500`).
+  - Snapshot-gated flow remains: parse → repair → detect once per run.
+- Manual “Scan now” cooldown:
+  - Server-enforced 24h cooldown per connection; UI shows countdown.
+  - Weekly auto incremental scans bypass manual cooldown but respect Safe Mode and token health.
+- Token health:
+  - Preflight `users/me/profile` before auto scans. If 401/403, mark `requires_reauth` and skip.
+- Locking:
+  - Per-connection distributed lock with 2m TTL, backoff retries, and stale-lock cleanup.
+- Stats:
+  - Per-session `stats.tokensUsed` and `stats.apiCost` persisted (estimated); expose via admin query.
+
+Expected incremental cost: ~$0.006–$0.02 per run (typical), assuming small deltas and high cache hit.
+
+---
+
 ## Operational Runbook (Must Follow)
 
 1) Verify Health (Read‑Only)

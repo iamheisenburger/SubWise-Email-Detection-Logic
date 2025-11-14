@@ -241,3 +241,56 @@ export const getDetectionQueueStats = query({
     };
   },
 });
+
+/**
+ * Get user scan stats: cooldowns, connection health, and recent costs
+ */
+export const getUserScanStats = query({
+  args: {
+    clerkUserId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkUserId))
+      .first();
+    if (!user) {
+      return null;
+    }
+    const connections = await ctx.db
+      .query("emailConnections")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    const connectionStats = connections.map((c) => ({
+      connectionId: c._id,
+      email: c.email,
+      status: c.status,
+      lastSyncedAt: c.lastSyncedAt,
+      lastScannedInternalDate: c.lastScannedInternalDate,
+      lastManualScanAt: c.lastManualScanAt,
+      nextEligibleManualScanAt: c.nextEligibleManualScanAt,
+    }));
+    const rawSessions = await ctx.db
+      .query("scanSessions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    const sessions = rawSessions
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+      .slice(0, Math.min(args.limit ?? 10, 50))
+      .map((s) => ({
+        sessionId: s._id,
+        type: s.type,
+        status: s.status,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt,
+        tokensUsed: s.stats?.tokensUsed ?? 0,
+        apiCost: s.stats?.apiCost ?? 0,
+        processingTimeMs: s.stats?.processingTimeMs ?? 0,
+      }));
+    return {
+      connections: connectionStats,
+      sessions,
+    };
+  },
+});

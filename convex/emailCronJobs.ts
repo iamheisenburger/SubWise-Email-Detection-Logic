@@ -212,6 +212,48 @@ export const createDetectionCandidates = internalMutation({
 });
 
 /**
+ * Weekly incremental scans per user (cost-safe)
+ */
+export const scheduleWeeklyIncrementalScans = internalMutation({
+  handler: async (ctx) => {
+    if (await isAutomationDisabledAsync(ctx)) {
+      console.log("🛑 SAFE MODE: scheduleWeeklyIncrementalScans skipped (crons disabled).");
+      return { message: "SAFE MODE: crons disabled", skipped: true };
+    }
+    console.log("📅 Scheduling weekly incremental scans for active users...");
+
+    // Collect active connections
+    const activeConnections = await ctx.db
+      .query("emailConnections")
+      .withIndex("by_status", (q) => q.eq("status", "active"))
+      .collect();
+
+    // Preflight token health per connection
+    const healthyUserIds = new Set<string>();
+    for (const conn of activeConnections) {
+      const preflight = await ctx.runAction(internal.emailScannerActions.preflightGmailToken, {
+        connectionId: conn._id,
+      });
+      if (preflight.ok) healthyUserIds.add(String(conn.userId));
+    }
+    const userIds = Array.from(healthyUserIds);
+    console.log(`👥 Found ${userIds.length} user(s) with at least one healthy connection`);
+
+    for (const userId of userIds) {
+      const user = await ctx.db.get(userId as any);
+      if (!user?.clerkId) continue;
+      await ctx.scheduler.runAfter(0, internal.scanning.orchestrator.startScan, {
+        clerkUserId: user.clerkId,
+        forceFullScan: false,
+        overrideManualCooldown: true,
+      });
+    }
+
+    return { message: `Scheduled weekly incremental scans for ${userIds.length} user(s)`, userCount: userIds.length };
+  },
+});
+
+/**
  * Send renewal reminder notifications
  * Called by cron daily at 9 AM
  */

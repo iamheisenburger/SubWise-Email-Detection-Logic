@@ -17,6 +17,43 @@ import { Id } from "./_generated/dataModel";
 import { isSubscriptionEmail } from "./scanning/smartFilter";
 
 /**
+ * Lightweight token preflight to avoid auto-scan failures.
+ */
+export const preflightGmailToken = internalAction({
+  args: {
+    connectionId: v.id("emailConnections"),
+  },
+  handler: async (ctx, args): Promise<{ ok: boolean; status?: number }> => {
+    try {
+      const connection: any = await ctx.runQuery(internal.emailScanner.getConnectionById, {
+        connectionId: args.connectionId,
+      });
+      if (!connection || connection.status !== "active") {
+        return { ok: false };
+      }
+      const resp = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+        headers: { Authorization: `Bearer ${connection.accessToken}` },
+      });
+      if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          await ctx.runMutation(internal.emailScanner.updateConnectionStatus, {
+            connectionId: connection._id,
+            status: "requires_reauth",
+            errorCode: "unauthorized",
+            errorMessage: "Gmail token no longer valid",
+          });
+        }
+        return { ok: false, status: resp.status };
+      }
+      return { ok: true, status: resp.status };
+    } catch (e) {
+      console.error("Preflight token check failed:", e);
+      return { ok: false };
+    }
+  },
+});
+
+/**
  * Scan Gmail for receipts using Gmail API
  * This is an ACTION (not mutation) because it uses fetch()
  */
@@ -24,6 +61,10 @@ export const scanGmailForReceipts = internalAction({
   args: {
     connectionId: v.id("emailConnections"),
     forceFullScan: v.optional(v.boolean()), // Force full inbox scan (ignore incremental mode)
+    // Incremental scan knobs (optional)
+    sinceTs: v.optional(v.number()),
+    capPages: v.optional(v.number()),
+    capMessages: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<{ success: boolean; receiptsFound?: number; totalProcessed?: number; scanComplete?: boolean; hasMorePages?: boolean; totalScanned?: number; totalReceipts?: number; error?: string }> => {
     try {
@@ -88,21 +129,22 @@ export const scanGmailForReceipts = internalAction({
 
       // Build time-range filter for incremental vs full scans
       const hasEverScannedFully = connection.lastFullScanAt && connection.lastFullScanAt > 0;
-      const isIncrementalScan = !args.forceFullScan && hasEverScannedFully && connection.scanStatus === "complete";
+      const lastIncrementalCheckpoint: number | undefined =
+        (typeof args.sinceTs === "number" && args.sinceTs > 0 ? args.sinceTs : undefined) ??
+        (typeof connection.lastScannedInternalDate === "number" ? connection.lastScannedInternalDate : undefined) ??
+        (typeof connection.lastFullScanAt === "number" ? connection.lastFullScanAt : undefined);
+      const isIncrementalScan = !args.forceFullScan && !!lastIncrementalCheckpoint && connection.scanStatus === "complete";
 
       let timeFilter = "";
       if (isIncrementalScan) {
-        // INCREMENTAL: Only scan emails AFTER last full scan (HUGE cost savings!)
-        const lastFullScanDate = Math.floor(connection.lastFullScanAt / 1000);
-        timeFilter = ` after:${lastFullScanDate}`;
-        console.log(`💰 INCREMENTAL SCAN: Only fetching NEW emails after ${new Date(connection.lastFullScanAt).toISOString()}`);
-        console.log(`💰 Expected: ~20-50 new emails (cost: $0.04-0.10)`);
+        const afterSeconds = Math.floor(lastIncrementalCheckpoint! / 1000);
+        timeFilter = ` after:${afterSeconds}`;
+        console.log(`💰 INCREMENTAL SCAN: Only fetching NEW emails after ${new Date(lastIncrementalCheckpoint!).toISOString()}`);
       } else {
         // FULL SCAN: Get subscription emails from last 12 MONTHS (captures annual subscriptions!)
         const twelveMonthsAgo = Math.floor((now - 12 * 30 * 24 * 60 * 60 * 1000) / 1000);
         timeFilter = ` after:${twelveMonthsAgo}`;
         console.log(`📧 FULL INBOX SCAN: Merchant-based search from last 12 MONTHS${args.forceFullScan ? " (FORCED by user)" : ""}`);
-        console.log(`📧 Expected: 200-300 emails (cost: $0.40-0.60) - Captures annual subscriptions!`);
       }
 
       // Split domains into batches of 15 (Gmail limit: ~1,500 chars, <20 OR terms)
@@ -116,8 +158,10 @@ export const scanGmailForReceipts = internalAction({
 
       // Collect all unique message IDs from all batches
       const allMessageIds = new Set<string>();
+      const maxPages = Math.max(1, Math.min(args.capPages ?? 3, domainBatches.length));
+      const maxMessages = Math.max(50, Math.min(args.capMessages ?? 500, 5000));
 
-      for (let batchIndex = 0; batchIndex < domainBatches.length; batchIndex++) {
+      for (let batchIndex = 0; batchIndex < domainBatches.length && batchIndex < maxPages; batchIndex++) {
         const batch = domainBatches[batchIndex];
 
         // Build Gmail query: from:(domain1.com OR domain2.com OR ...)
@@ -147,6 +191,7 @@ export const scanGmailForReceipts = internalAction({
           // Add message IDs to set (automatically deduplicates)
           for (const message of messages) {
             allMessageIds.add(message.id);
+            if (allMessageIds.size >= maxMessages) break;
           }
 
           console.log(`✅ Batch ${batchIndex + 1}: Found ${messages.length} emails (${allMessageIds.size} unique total)`);
@@ -156,8 +201,12 @@ export const scanGmailForReceipts = internalAction({
         }
 
         // Rate limiting: 2 second delay between batches
-        if (batchIndex < domainBatches.length - 1) {
+        if (batchIndex < domainBatches.length - 1 && allMessageIds.size < maxMessages) {
           await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        if (allMessageIds.size >= maxMessages) {
+          console.log(`🛑 Reached capMessages=${maxMessages}. Stopping domain batch loop early.`);
+          break;
         }
       }
 
@@ -201,6 +250,7 @@ export const scanGmailForReceipts = internalAction({
       // For now, we process all messages in one go (no pagination between batches)
       // Future optimization: Could implement pagination if message count exceeds threshold
       const nextPageToken = undefined;
+      let lastInternalDateMax = 0;
 
       if (messages.length === 0) {
         // No messages in this batch - mark scan as complete
@@ -247,6 +297,8 @@ export const scanGmailForReceipts = internalAction({
           const subject = headers.find((h: any) => h.name.toLowerCase() === "subject")?.value || "No Subject";
           const from = headers.find((h: any) => h.name.toLowerCase() === "from")?.value || "Unknown";
           const date = headers.find((h: any) => h.name.toLowerCase() === "date")?.value;
+          const internalDateStr = messageData.internalDate;
+          const internalDate = internalDateStr ? Number(internalDateStr) : undefined;
 
           // Parse date
           let receivedAt = now;
@@ -256,6 +308,10 @@ export const scanGmailForReceipts = internalAction({
               receivedAt = parsedDate.getTime();
             }
           }
+          if (typeof internalDate === "number" && !Number.isNaN(internalDate)) {
+            receivedAt = internalDate;
+          }
+          if (receivedAt > lastInternalDateMax) lastInternalDateMax = receivedAt;
 
           // Extract email body
           let body = "";
@@ -371,6 +427,14 @@ export const scanGmailForReceipts = internalAction({
           });
           console.log(`💰 FULL SCAN COMPLETE - Future scans will be incremental (only NEW emails after ${new Date(now).toISOString()})`);
           console.log(`💰 Cost savings: Next scan will cost ~$0.15 instead of $1.50-2.00`);
+        }
+        if (lastInternalDateMax > 0) {
+          await ctx.runMutation(internal.emailScanner.updateConnectionData, {
+            connectionId: connection._id,
+            lastScannedInternalDate: lastInternalDateMax,
+            lastSyncedAt: now,
+          });
+          console.log(`⏭️ Updated lastScannedInternalDate to ${new Date(lastInternalDateMax).toISOString()}`);
         }
 
         console.log(`✅ Full inbox scan COMPLETE for ${connection.email}`);

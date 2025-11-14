@@ -323,11 +323,17 @@ export default defineSchema({
       v.literal("active"),
       v.literal("disconnected"),
       v.literal("error"),
-      v.literal("requires_reauth")
+      v.literal("requires_reauth"),
+      // Incremental scans: explicit token states for scheduling/guard rails
+      v.literal("expired"),
+      v.literal("revoked")
     ),
     lastSyncedAt: v.optional(v.number()), // Last time we scanned emails
     syncCursor: v.optional(v.string()), // Timestamp for incremental scans
     lastFullScanAt: v.optional(v.number()), // When last FULL inbox scan completed (for incremental mode)
+    // Incremental scan checkpoints
+    lastScannedInternalDate: v.optional(v.number()), // Gmail internalDate of newest processed message (ms)
+    lastHistoryId: v.optional(v.string()), // Optional Gmail historyId checkpoint
     // Full inbox scan pagination (Phase 3)
     scanStatus: v.optional(v.union(
       v.literal("not_started"),  // Never scanned before
@@ -338,6 +344,9 @@ export default defineSchema({
     pageToken: v.optional(v.string()), // Gmail API nextPageToken for pagination
     totalEmailsScanned: v.optional(v.number()), // Progress tracking
     totalReceiptsFound: v.optional(v.number()), // Progress tracking
+    // Manual scan cooldown controls
+    lastManualScanAt: v.optional(v.number()),
+    nextEligibleManualScanAt: v.optional(v.number()),
     // AI processing progress (for real-time UI updates)
     aiProcessingStatus: v.optional(v.union(
       v.literal("not_started"),
