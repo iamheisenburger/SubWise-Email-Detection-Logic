@@ -20,6 +20,16 @@ Release pointers (canonical)
 - Branch: release/2025-11-14-stable
 - Tag: v1.0.0-stable
 
+Incremental release
+- Branch: release/2025-11-14-incremental
+- Tag: v1.1.0-incremental
+
+What’s new in incremental:
+- Gmail after:<lastScannedInternalDate> + caps (pages/messages)
+- Weekly auto-scan with token preflight
+- 24h server-enforced manual cooldown
+- Safer locking + cost stats persisted
+
 Pin from your main app (option A: git submodule, pinned to tag)
 
     git submodule add https://github.com/iamheisenburger/SubWise-Email-Detection-Logic.git vendor/SubWise-Email-Detection-Logic
