@@ -514,6 +514,9 @@ export default defineSchema({
     lastDetectionCount: v.optional(v.number()),
     detectionCountStreak: v.optional(v.number()),
     lastHeuristicsUpdateAt: v.optional(v.number()),
+    // Debug/query safeguards
+    debugQueriesDisabled: v.optional(v.boolean()), // If true, read-only debug endpoints return minimal responses
+    minDebugPollIntervalMs: v.optional(v.number()), // Minimum allowed poll interval for debug/status endpoints
   }).index("by_key", ["key"]),
 });
 
