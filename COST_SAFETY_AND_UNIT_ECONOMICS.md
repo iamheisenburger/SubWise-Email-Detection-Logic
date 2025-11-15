@@ -129,6 +129,20 @@ Why: Prevents hidden costs from ad‑hoc watchers while keeping the pipeline and
 
 ---
 
+## UI Analytics & Currency Safety (New)
+
+- Do NOT call `fetch()` from Convex queries/mutations. Queries must be pure DB reads. Any network access must be an action.
+- Currency conversion:
+  - Backend returns raw subscription amounts in stored currency.
+  - Client (browser) performs conversion for display using lightweight rates.
+  - If backend conversion is ever required, use an action with cached rates; queries must fall back to static rates only.
+- Analytics must not poll frequently; rely on Convex reactivity or ≥5‑minute intervals if a refresh loop is strictly necessary.
+- Treat repeated warnings in logs as a cost signal; fix before merging.
+
+Why: Prevents accidental cost from query retries and keeps analytics paths cheap.
+
+---
+
 ## Operational Runbook (Must Follow)
 
 1) Verify Health (Read‑Only)
