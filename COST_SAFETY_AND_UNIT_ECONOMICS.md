@@ -112,15 +112,15 @@ Expected incremental cost: ~$0.006–$0.02 per run (typical), assuming small del
 ## Endpoint-Level Protections (New)
 
 - Debug endpoints can be globally disabled:
-  - Flag: `systemSettings.debugQueriesDisabled = true`
+  - Flag: `systemSettings.debugQueriesDisabled = true` (set via admin control)
   - Effect: read-only debug/status queries return a minimal response and do no heavy work.
-- Server-side throttle (reference implementation in app repo):
+- Server-side throttle for high-frequency polling:
   - Minimum interval per user per endpoint: `systemSettings.minDebugPollIntervalMs` (default 60s).
-  - Intended for:
+  - Enforced in:
     - `scanning/orchestrator:getScanProgress`
     - `adminQueries:getUserDetectionCandidates`
     - `diagnostics:getScanDiagnostics`
-  - Implementation detail: short‑lived “rateLimit” token (distributedLocks) used to gate rapid polling.
+  - Implementation detail: a short-lived lock is used as a per-user/endpoint token; repeated calls within the window are rejected.
 - Operational rule:
   - DO NOT run continuous CLI/watch loops. Use ad‑hoc checks or ≥5‑minute polling only during an active scan.
   - If rapid polling is detected, set `debugQueriesDisabled=true` immediately.
@@ -131,15 +131,15 @@ Why: Prevents hidden costs from ad‑hoc watchers while keeping the pipeline and
 
 ## UI Analytics & Currency Safety (New)
 
-- Do NOT call `fetch()` from Convex queries/mutations. Queries must be pure DB reads. Any network access must be an action.
+- Never use `fetch()` inside Convex queries or mutations. Queries must be pure DB reads; any network access belongs in actions only.
 - Currency conversion:
-  - Backend returns raw subscription amounts in stored currency.
-  - Client (browser) performs conversion for display using lightweight rates.
-  - If backend conversion is ever required, use an action with cached rates; queries must fall back to static rates only.
-- Analytics must not poll frequently; rely on Convex reactivity or ≥5‑minute intervals if a refresh loop is strictly necessary.
-- Treat repeated warnings in logs as a cost signal; fix before merging.
+  - Backend returns raw subscription amounts in their stored currency.
+  - Conversion to user‑preferred currency happens client‑side (browser) using a lightweight rates API.
+  - If backend needs conversion (rare), it must use an action and cache rates; queries fall back to static rates only.
+- Analytics pages must not poll; rely on Convex reactivity. If a refresh loop is necessary, enforce ≥5‑minute intervals.
+- Any repeated warning/error in logs is treated as a cost signal—investigate before merging.
 
-Why: Prevents accidental cost from query retries and keeps analytics paths cheap.
+Why: Prevents accidental background costs from query retries and avoids hidden compute from analytics pages.
 
 ---
 

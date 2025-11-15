@@ -581,14 +581,14 @@ export const runPatternBasedDetection = internalMutation({
           console.log(`  ⏭️  Skipping blocked merchant: ${merchantName}`);
           continue;
         }
-        // Allow single recent receipt for YEARLY plans only with strong textual evidence
+        // Allow single recent receipt for YEARLY plans.
+        // By the time we label something YEARLY we already have strong textual
+        // cadence evidence (\"annual plan\", etc.). We still require
+        // `hasChargeEvidence` below so we don't treat non‑payment emails as
+        // subscriptions.
         const allowSingleForYearly =
           billingCycle === "yearly" &&
-          sortedReceipts.length >= 1 &&
-          hasStrongSubjectEvidence(sortedReceipts, merchantName) &&
-          hasAutoRenewEvidence(sortedReceipts) &&
-          hasMerchantAdjacentRenewal(sortedReceipts, merchantName) &&
-          hasNextBillingDateEvidence(sortedReceipts, latestReceiptDate, merchantName);
+          sortedReceipts.length >= 1;
         // Allow single recent monthly only if strong subject/body evidence AND subscription keywords present
         const strongSubjectEvidence = hasStrongSubjectEvidence(sortedReceipts, merchantName);
         const allowSingleForMonthly =
@@ -925,7 +925,8 @@ function hasAutoRenewEvidence(receipts: Array<{ [key: string]: any }>): boolean 
     const subject: string = (r as any).subject || "";
     const body: string = (r as any).rawBody || "";
     const text = `${subject}\n${body}`.toLowerCase();
-    if (/\b(auto[-\s]?renew|renews\s+(each|every)\s+(year|month|week)|will\s+renew\s+on|renews\s+on|next\s+billing|next\s+charge|next\s+payment)\b/.test(text)) {
+    // Allow both explicit auto‑renew phrasing and Apple's shorter "Renews <date>" format.
+    if (/\b(auto[-\s]?renew|renews\b|renews\s+(each|every)\s+(year|month|week)|will\s+renew\s+on|next\s+billing|next\s+charge|next\s+payment)\b/.test(text)) {
       return true;
     }
   }
@@ -945,7 +946,8 @@ function hasMerchantAdjacentRenewal(
     const subject: string = (r as any).subject || "";
     const body: string = (r as any).rawBody || "";
     const combined = `${subject}\n${body}`;
-    const m = combined.match(/(auto[-\s]?renew|renews\s+(each|every)\s+(year|month|week)|will\s+renew\s+on|renews\s+on|next\s+(billing|charge|payment))/i);
+    // Treat both "renews on <date>" and "renews <date>" as valid renewal cues.
+    const m = combined.match(/(auto[-\s]?renew|renews\b|renews\s+(each|every)\s+(year|month|week)|will\s+renew\s+on|next\s+(billing|charge|payment))/i);
     if (m && m.index !== undefined) {
       const start = Math.max(0, m.index - 120);
       const end = Math.min(combined.length, m.index + 200);
@@ -985,8 +987,9 @@ function hasNextBillingDateEvidence(
     const body: string = (r as any).rawBody || "";
     const combined = `${subject}\n${body}`;
 
-    // Look for "renews on", "next billing", etc. near a date
-    const windowRegex = /(renews\s+on|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date)[\s\S]{0,120}?/i;
+    // Look for renewal wording ("renews", "next billing", etc.) near a date.
+    // Supports Apple's \"Renews 13 August 2026\" format (no \"on\").
+    const windowRegex = /(renews\b|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date)[\s\S]{0,120}?/i;
     const windowMatch = combined.match(windowRegex);
     if (windowMatch) {
       const snippetStart = Math.max(0, windowMatch.index!);
@@ -1281,8 +1284,8 @@ function getNextBillingDateFromEvidence(
     const subject: string = (r as any).subject || "";
     const body: string = (r as any).rawBody || "";
     const combined = `${subject}\n${body}`;
-    // Look for renewal window near phrases
-    const windowRegex = /(renews\s+on|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date)[\s\S]{0,160}?/i;
+    // Look for renewal window near phrases, including Apple's \"Renews <date>\" pattern.
+    const windowRegex = /(renews\b|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date)[\s\S]{0,160}?/i;
     const windowMatch = combined.match(windowRegex);
     if (!windowMatch) continue;
     const snippetStart = Math.max(0, windowMatch.index!);

@@ -645,11 +645,13 @@ export const countUnparsedReceipts = internalMutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .take(1000);
 
-    const unparsedCount = allReceipts.filter(
-      (receipt) =>
-        !receipt.parsed ||
-        (!receipt.merchantName && !receipt.amount)
-    ).length;
+    // Definition of "unparsed" must match getUnparsedReceipts to avoid
+    // phantom backlog loops in the auto‑batching pipeline.
+    // We intentionally treat only `parsed === false` as unparsed; receipts
+    // that were previously marked parsed but lack merchant/amount are treated
+    // as low‑confidence non‑subscriptions and are not re‑queued here.
+    const unparsedCount = allReceipts.filter((receipt) => !receipt.parsed)
+      .length;
 
     console.log(`📊 Unparsed receipts: ${unparsedCount}/${allReceipts.length} total`);
 
