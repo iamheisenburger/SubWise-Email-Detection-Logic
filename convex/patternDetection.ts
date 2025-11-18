@@ -539,12 +539,13 @@ export const runPatternBasedDetection = internalMutation({
       const inferredCycle = inferBillingCycle(sortedReceipts);
       const detectedCycle = latestReceipt.billingCycle; // From AI parsing
       const textualCycle = inferCycleFromText(sortedReceipts);
+      const hasAnnualDateEvidence = hasNextBillingDateEvidence(sortedReceipts, latestReceiptDate, merchantName);
 
       // Precedence: explicit monthly text wins; then weekly; then yearly; else AI/patterns
       const billingCycle =
         textualCycle === "monthly" ? "monthly" :
         textualCycle === "weekly" ? "weekly" :
-        textualCycle === "yearly" ? "yearly" :
+        textualCycle === "yearly" || hasAnnualDateEvidence ? "yearly" :
         (detectedCycle === "yearly" || inferredCycle === "yearly") ? "yearly" :
         (detectedCycle === "weekly" || inferredCycle === "weekly") ? "weekly" :
         detectedCycle || inferredCycle || "monthly";
@@ -914,7 +915,16 @@ function normalizeForCancellation(name: string): string {
  */
 function isTrustedMerchantForSingleMonthly(merchantName: string): boolean {
   const norm = normalizeMerchantName(merchantName);
-  return norm === "playstation" || norm === "spotify" || norm === "x";
+  // Allow-list merchants where a single recent charge is reliable subscription evidence.
+  // These are providers with consistent templates and low false-positive risk.
+  return (
+    norm === "playstation" ||
+    norm === "spotify" ||
+    norm === "x" ||
+    // Fortect: license-style product with clear ongoing access period; safe to treat
+    // as a subscription-like charge even when we only see one recent receipt.
+    norm === "fortect"
+  );
 }
 
 /**
@@ -987,9 +997,12 @@ function hasNextBillingDateEvidence(
     const body: string = (r as any).rawBody || "";
     const combined = `${subject}\n${body}`;
 
-    // Look for renewal wording ("renews", "next billing", etc.) near a date.
-    // Supports Apple's \"Renews 13 August 2026\" format (no \"on\").
-    const windowRegex = /(renews\b|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date)[\s\S]{0,120}?/i;
+    // Look for renewal/expiry wording near a date.
+    // Supports patterns like:
+    // - "Renews 13 August 2026"
+    // - "Next billing date: <date>"
+    // - "License Expiration Date: <date>"
+    const windowRegex = /(renews\b|next\s+(?:billing|payment|charge)|will\s+renew\s+on|renewal\s+date|expires\s+on|expiration\s+date|expiry\s+date|license\s+expiration\s+date)[\s\S]{0,160}?/i;
     const windowMatch = combined.match(windowRegex);
     if (windowMatch) {
       const snippetStart = Math.max(0, windowMatch.index!);
@@ -999,9 +1012,10 @@ function hasNextBillingDateEvidence(
         continue;
       }
       // Prefer explicit yearly phrasing if present, but do not require it.
-      // Some Apple invoices show only "Renews <date>" without "yearly/annual".
-      // Require charge confirmation words to avoid newsletters/promotions without a real charge
-      if (!/\b(charged?|paid|billed?|invoice|receipt)\b/i.test(snippet)) {
+      // Some providers show only a future expiry/renewal date (e.g. "License Expiration Date")
+      // without the word "yearly/annual". Require charge-related words to avoid pure
+      // marketing emails.
+      if (!/\b(charged?|paid|billed?|invoice|receipt|order|price|amount|total)\b/i.test(snippet)) {
         continue;
       }
       for (const p of datePatterns) {

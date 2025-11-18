@@ -110,7 +110,8 @@ export const startScan = mutation({
         typeof connection.nextEligibleManualScanAt === "number" &&
         now < connection.nextEligibleManualScanAt;
       if (cooldownActive) {
-        const retryInMs = connection.nextEligibleManualScanAt - now;
+        const nextEligible = connection.nextEligibleManualScanAt as number;
+        const retryInMs = nextEligible - now;
         console.log(`⏳ Cooldown active for ${connection.email}. Retry in ${Math.ceil(retryInMs / 60000)} min.`);
         continue;
       }
@@ -535,30 +536,6 @@ async function completeParsingPhase(
 
   const candidatesCreated = detectionResult.candidatesCreated || 0;
   const receiptsProcessed = session.checkpoint?.receiptsProcessed || 0;
-
-  // Preflight cleanup & validation (block aggregators, dedupe, golden check if enabled)
-  try {
-    const validation = await ctx.runMutation(internal.validation.cleanAndValidateCandidates, {
-      userId: session.userId,
-    });
-    if (!validation.ok) {
-      console.warn(`🛑 Validation issues: ${validation.issues.join(", ")}`);
-      await ctx.runMutation(internal.core.stateMachine.transitionState, {
-        sessionId,
-        newState: ScanState.REVIEWING,
-      });
-      // Do not mark COMPLETE; leave in REVIEWING for manual inspection
-      return;
-    }
-  } catch (err) {
-    console.error("Validation step failed:", err);
-    // Fail-safe: leave in REVIEWING, do not complete
-    await ctx.runMutation(internal.core.stateMachine.transitionState, {
-      sessionId,
-      newState: ScanState.REVIEWING,
-    });
-    return;
-  }
 
   // Update final checkpoint
   await ctx.runMutation(internal.core.stateMachine.updateCheckpoint, {

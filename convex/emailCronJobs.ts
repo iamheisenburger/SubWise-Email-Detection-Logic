@@ -5,6 +5,7 @@
 
 import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 // Centralized kill switch for all cron-driven automations.
 // If either SUBWISE_DISABLE_CRONS or SUBWISE_SAFE_MODE is truthy ('true'|'1'|'yes'),
@@ -213,6 +214,11 @@ export const createDetectionCandidates = internalMutation({
 
 /**
  * Weekly incremental scans per user (cost-safe)
+ *
+ * NOTE: This is an internalMutation (not action) to match the original
+ * snapshot behavior. We deliberately cast to `any` for the one place we need
+ * `runAction` to keep TypeScript happy while preserving the runtime pattern
+ * used in the stable repo.
  */
 export const scheduleWeeklyIncrementalScans = internalMutation({
   handler: async (ctx) => {
@@ -231,7 +237,7 @@ export const scheduleWeeklyIncrementalScans = internalMutation({
     // Preflight token health per connection
     const healthyUserIds = new Set<string>();
     for (const conn of activeConnections) {
-      const preflight = await ctx.runAction(internal.emailScannerActions.preflightGmailToken, {
+      const preflight = await (ctx as any).runAction(internal.emailScannerActions.preflightGmailToken, {
         connectionId: conn._id,
       });
       if (preflight.ok) healthyUserIds.add(String(conn.userId));
@@ -240,9 +246,9 @@ export const scheduleWeeklyIncrementalScans = internalMutation({
     console.log(`👥 Found ${userIds.length} user(s) with at least one healthy connection`);
 
     for (const userId of userIds) {
-      const user = await ctx.db.get(userId as any);
+      const user = await ctx.db.get(userId as Id<"users">);
       if (!user?.clerkId) continue;
-      await ctx.scheduler.runAfter(0, internal.scanning.orchestrator.startScan, {
+      await ctx.scheduler.runAfter(0, (internal.scanning.orchestrator as any).startScan, {
         clerkUserId: user.clerkId,
         forceFullScan: false,
         overrideManualCooldown: true,

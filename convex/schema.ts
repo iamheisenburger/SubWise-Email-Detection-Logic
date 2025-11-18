@@ -507,6 +507,11 @@ export default defineSchema({
     key: v.string(), // "global"
     // Safety controls
     safeMode: v.optional(v.boolean()),
+    // Newer, more descriptive safe-mode flags (for admin UI)
+    safeModeEnabled: v.optional(v.boolean()),
+    safeModeReason: v.optional(v.string()),
+    safeModeMessage: v.optional(v.string()),
+    safeModeEnabledAt: v.optional(v.number()),
     cronsDisabled: v.optional(v.boolean()),
     autoKillReason: v.optional(v.string()),
     autoKillAt: v.optional(v.number()),
@@ -514,6 +519,10 @@ export default defineSchema({
     lastDetectionCount: v.optional(v.number()),
     detectionCountStreak: v.optional(v.number()),
     lastHeuristicsUpdateAt: v.optional(v.number()),
+    // Additional heuristics tracking for queue stability
+    lastDetectionQueueSize: v.optional(v.number()),
+    lastDetectionQueueCheck: v.optional(v.number()),
+    consecutiveUnchangedRuns: v.optional(v.number()),
     // Debug/query safeguards
     debugQueriesDisabled: v.optional(v.boolean()), // If true, read-only debug endpoints return minimal responses
     minDebugPollIntervalMs: v.optional(v.number()), // Minimum allowed poll interval for debug/status endpoints

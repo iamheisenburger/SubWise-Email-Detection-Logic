@@ -25,14 +25,23 @@ export const repairParsedReceipts = internalMutation({
       .filter((q) => q.eq(q.field("parsed"), true))
       .collect();
 
-    // Consider a receipt "broken" if it is missing merchant/amount OR has a generic aggregator merchant
+    // Consider a receipt "broken" if it is missing merchant/amount, has a generic
+    // aggregator merchant, or matches a known mislabel pattern.
     const AGGREGATOR_NAMES = new Set(["apple", "stripe", "paypal", "google", "paddle"]);
     const brokenAll = parsed.filter((r: any) => {
       const hasMissing = r.merchantName == null || r.amount == null;
-      if (hasMissing) return true;
       // If merchant exists but is an aggregator, attempt service extraction to unify clusters
       const normalized = normalizeMerchantName(r.merchantName || "");
-      return AGGREGATOR_NAMES.has(normalized);
+
+      const subject = (r.subject || "").toLowerCase();
+      const from = (r.from || "").toLowerCase();
+      const looksLikeFortect =
+        subject.includes("fortect") ||
+        from.includes("fortect.com");
+      const isFortectMislabel =
+        looksLikeFortect && normalized === "playstation";
+
+      return hasMissing || AGGREGATOR_NAMES.has(normalized) || isFortectMislabel;
     });
     // Process newest broken receipts first for determinism across scans
     const broken = brokenAll
@@ -50,6 +59,8 @@ export const repairParsedReceipts = internalMutation({
       const subject = (r as any).subject || "";
       const from = (r as any).from || "";
       const body = (r as any).rawBody || "";
+      const lowerSubject = subject.toLowerCase();
+      const lowerFrom = from.toLowerCase();
 
       // 1) Merchant salvage
       // Try to extract a specific service when merchant is missing OR a generic aggregator
@@ -60,6 +71,27 @@ export const repairParsedReceipts = internalMutation({
         /^system$/i.test(String(newMerchant)) ||
         /^g\d+.*invoice\s+date/i.test(String(newMerchant)) ||
         /^g40ps\s+gbr/i.test(String(newMerchant));
+
+      // Fortect-specific fix: some older AI parses mislabeled Fortect as PlayStation.
+      // If the email clearly comes from Fortect but merchant is PlayStation, relabel
+      // deterministically to Fortect. This is narrow and won't affect real PlayStation receipts.
+      const looksLikeFortect =
+        lowerSubject.includes("fortect") ||
+        lowerFrom.includes("fortect.com");
+      if (
+        looksLikeFortect &&
+        newMerchant &&
+        normalizeMerchantName(newMerchant) === "playstation"
+      ) {
+        newMerchant = "Fortect";
+        await ctx.db.patch(r._id, {
+          merchantName: newMerchant,
+          parsingConfidence: Math.max(r.parsingConfidence ?? 0.6, 0.9),
+          // Clear detectionCandidateId so detection can create a dedicated Fortect candidate
+          detectionCandidateId: undefined,
+        });
+        fixedMerchant++;
+      }
       if (merchantNeedsRepair) {
         // Subject patterns
         const fromMatch = subject.match(/(?:receipt|invoice)\s+from\s+([^#\n]+?)(?:\s*#|\s*$)/i);
